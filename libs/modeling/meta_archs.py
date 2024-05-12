@@ -7,7 +7,7 @@ from torch.nn import functional as F
 from .models import register_meta_arch, make_backbone, make_neck, make_generator
 from .blocks import MaskedConv1D, Scale, LayerNorm
 from .losses import ctr_diou_loss_1d, sigmoid_focal_loss
-
+from timm.utils import accuracy
 from ..utils import batched_nms
 
 class PtTransformerClsHead(nn.Module):
@@ -531,6 +531,49 @@ class PtTransformer(nn.Module):
 
         return cls_targets, reg_targets
 
+    @torch.no_grad()
+    def get_vn_accuracy(self, out_cls_logits, gt_target):
+        import json
+        import numpy as np
+        N, _ = out_cls_logits.shape
+        v_cls, n_cls = 97, 300
+        with open('/data3/heyuping/epic100/epic_kitchens/annotations/mapping_a2vn.json', 'r') as f:
+            mapping_a2vn = json.load(f)
+        with open('/data3/heyuping/epic100/epic_kitchens/annotations/mapping_v2a.json', 'r') as f:
+            mapping_v2a = json.load(f)
+        with open('/data3/heyuping/epic100/epic_kitchens/annotations/mapping_n2a.json', 'r') as f:
+            mapping_n2a = json.load(f)
+            
+        indexes = torch.argmax(gt_target, dim=1)
+        target_to_verb = [mapping_a2vn[str(idx.item())]['verb'] for idx in indexes] #N
+        target_to_noun = [mapping_a2vn[str(idx.item())]['noun'] for idx in indexes] #N
+        
+        
+        out_logits = torch.softmax(out_cls_logits, dim = 1).detach().cpu()
+        mprobs = []
+        for verb in range(v_cls):
+            ilist = mapping_v2a[str(verb)]
+            mprobs.append(out_logits[:, ilist].sum(1))
+        mprobs = np.array(mprobs).T
+        verb_scores = torch.tensor(mprobs).cuda()
+        
+        mprobs = []
+        for noun in range(n_cls):
+            if str(noun) in mapping_n2a:
+                ilist = mapping_n2a[str(noun)]
+                mprobs.append(out_logits[:, ilist].sum(1))
+            else:
+                mprobs.append([0 for _ in range(N)])
+        mprobs = np.array(mprobs).T
+        noun_scores = torch.tensor(mprobs).cuda()
+        
+        target_to_verb = torch.tensor(target_to_verb).cuda()
+        target_to_noun = torch.tensor(target_to_noun).cuda()
+        acc1_verb, _ = accuracy(verb_scores, target_to_verb, topk=(1, 5))
+        acc1_noun, _ = accuracy(noun_scores, target_to_noun, topk=(1, 5))
+        # print("verb acc: ", acc1_verb.item(), "noun acc", acc1_noun.item())
+        return acc1_verb, acc1_noun
+        
     def losses(
         self, fpn_masks,
         out_cls_logits, out_offsets,
@@ -571,6 +614,7 @@ class PtTransformer(nn.Module):
         )
         cls_loss /= self.loss_normalizer
 
+        acc1_verb, acc1_noun = self.get_vn_accuracy(torch.cat(out_cls_logits, dim=1)[valid_mask], gt_target)
         # 2. regression using IoU/GIoU loss (defined on positive samples)
         if num_pos == 0:
             reg_loss = 0 * pred_offsets.sum()
@@ -592,7 +636,9 @@ class PtTransformer(nn.Module):
         final_loss = cls_loss + reg_loss * loss_weight
         return {'cls_loss'   : cls_loss,
                 'reg_loss'   : reg_loss,
-                'final_loss' : final_loss}
+                'final_loss' : final_loss,
+                'acc1_verb'  : acc1_verb,
+                'acc1_noun'  : acc1_noun}
 
     @torch.no_grad()
     def inference(

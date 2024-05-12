@@ -17,7 +17,8 @@ from libs.datasets import make_dataset, make_data_loader
 from libs.modeling import make_meta_arch
 from libs.utils import valid_one_epoch, ANETdetection, fix_random_seed
 
-
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '6'
 ################################################################################
 def main(args):
     """0. load config"""
@@ -111,9 +112,9 @@ if __name__ == '__main__':
     # the arg parser
     parser = argparse.ArgumentParser(
       description='Train a point-based transformer for action localization')
-    parser.add_argument('config', type=str, metavar='DIR',
+    parser.add_argument('-config', type=str, metavar='DIR',default='/home/heyuping/acformer_epic/configs/epic_slowfast_action.yaml',
                         help='path to a config file')
-    parser.add_argument('ckpt', type=str, metavar='DIR',
+    parser.add_argument('-ckpt', type=str, metavar='DIR',default='/data3/heyuping/epic100/ckpt/epic_slowfast_action_reproduce/epoch_020.pth.tar',
                         help='path to a checkpoint')
     parser.add_argument('-epoch', type=int, default=-1,
                         help='checkpoint epoch')

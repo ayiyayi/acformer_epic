@@ -36,7 +36,7 @@ DEFAULTS = {
     },
     "loader": {
         "batch_size": 8,
-        "num_workers": 4,
+        "num_workers": 1,
     },
     # network architecture
     "model": {

@@ -20,6 +20,8 @@ from libs.utils import (train_one_epoch, valid_one_epoch, ANETdetection,
                         save_checkpoint, make_optimizer, make_scheduler,
                         fix_random_seed, ModelEma)
 
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "6"
 
 ################################################################################
 def main(args):
@@ -61,6 +63,9 @@ def main(args):
     train_dataset = make_dataset(
         cfg['dataset_name'], True, cfg['train_split'], **cfg['dataset']
     )
+    val_dataset = make_dataset(
+        cfg['dataset_name'], False, cfg['val_split'], **cfg['dataset']
+    )
     # update cfg based on dataset attributes (fix to epic-kitchens)
     train_db_vars = train_dataset.get_attributes()
     cfg['model']['train_cfg']['head_empty_cls'] = train_db_vars['empty_label_ids']
@@ -68,6 +73,11 @@ def main(args):
     # data loaders
     train_loader = make_data_loader(
         train_dataset, True, rng_generator, **cfg['loader'])
+    
+    # set bs = 1, and disable shuffle
+    val_loader = make_data_loader(
+        val_dataset, False, None, 1, cfg['loader']['num_workers']
+    )
 
     """3. create model, optimizer, and scheduler"""
     # model
@@ -113,6 +123,13 @@ def main(args):
 
     """4. training / validation loop"""
     print("\nStart training model {:s} ...".format(cfg['model_name']))
+    
+    val_db_vars = val_dataset.get_attributes()
+    det_eval = ANETdetection(
+        val_dataset.json_file,
+        val_dataset.split[0],
+        tiou_thresholds = val_db_vars['tiou_thresholds']
+    )
 
     # start training
     max_epochs = cfg['opt'].get(
@@ -152,6 +169,21 @@ def main(args):
                 file_folder=ckpt_folder,
                 file_name='epoch_{:03d}.pth.tar'.format(epoch + 1)
             )
+            
+        if (
+            ((epoch + 1) == max_epochs) or
+            ((epoch >= args.val_start_epoch) and ((epoch + 1) % args.val_freq == 0))
+        ):
+            mAP = valid_one_epoch(
+                val_loader,
+                model,
+                -1,
+                evaluator=det_eval,
+                output_file=None,
+                ext_score_file=cfg['test_cfg']['ext_score_file'],
+                tb_writer=None,
+                print_freq=args.print_freq
+            )
 
     # wrap up
     tb_writer.close()
@@ -164,13 +196,17 @@ if __name__ == '__main__':
     # the arg parser
     parser = argparse.ArgumentParser(
       description='Train a point-based transformer for action localization')
-    parser.add_argument('config', metavar='DIR',
+    parser.add_argument('-config', metavar='DIR',default='/home/heyuping/acformer_epic/configs/epic_slowfast_verb_simota.yaml',
                         help='path to a config file')
-    parser.add_argument('-p', '--print-freq', default=10, type=int,
+    parser.add_argument('-p', '--print-freq', default=50, type=int,
                         help='print frequency (default: 10 iterations)')
-    parser.add_argument('-c', '--ckpt-freq', default=5, type=int,
+    parser.add_argument('-c', '--ckpt-freq', default=2, type=int,
                         help='checkpoint frequency (default: every 5 epochs)')
-    parser.add_argument('--output', default='', type=str,
+    parser.add_argument('-v', '--val-freq', default=2, type=int,
+                        help='val frequency (default: every 5 epochs)')
+    parser.add_argument('-t', '--val-start-epoch', default=8, type=int,
+                        help='val start epoch (default: every 5 epochs)')
+    parser.add_argument('--output', default='reproduce', type=str,
                         help='name of exp folder (default: none)')
     parser.add_argument('--resume', default='', type=str, metavar='PATH',
                         help='path to a checkpoint (default: none)')

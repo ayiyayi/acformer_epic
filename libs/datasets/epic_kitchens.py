@@ -28,7 +28,8 @@ class EpicKitchensDataset(Dataset):
         num_classes,     # number of action categories
         file_prefix,     # feature file prefix if any
         file_ext,        # feature file extension if any
-        force_upsampling # force to upsample to max_seq_len
+        force_upsampling, # force to upsample to max_seq_len
+        is_test = False
     ):
         # file path
         assert os.path.exists(feat_folder) and os.path.exists(json_file)
@@ -41,6 +42,7 @@ class EpicKitchensDataset(Dataset):
             self.file_prefix = ''
         self.file_ext = file_ext
         self.json_file = json_file
+        self.is_test = is_test
 
         # split / training mode
         self.split = split
@@ -94,11 +96,17 @@ class EpicKitchensDataset(Dataset):
         json_db = json_data['database']
 
         # if label_dict is not available
-        if self.label_dict is None:
+        if self.label_dict is None and not self.is_test:
             label_dict = {}
             for key, value in json_db.items():
                 for act in value['annotations']:
                     label_dict[act['label']] = act['label_id']
+                    
+        if self.label_dict is None and self.is_test:  
+            label_dict = {}
+            action_cls = 3806
+            for i in range(action_cls):
+                label_dict[str(i)] = i
 
         # fill in the db (immutable afterwards)
         dict_db = tuple()

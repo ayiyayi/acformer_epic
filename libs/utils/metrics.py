@@ -38,6 +38,9 @@ def load_gt_seg_from_json(json_file, split=None, label='label_id', label_offset=
     json_db = json_db['database']
 
     vids, starts, stops, labels = [], [], [], []
+    labels_verb, labels_noun = [], []
+    with open('/data3/heyuping/epic100/epic_kitchens/annotations/mapping_a2vn.json', 'r') as f:
+        mapping_a2vn = json.load(f)
     for k, v in json_db.items():
 
         # filter based on split
@@ -60,13 +63,17 @@ def load_gt_seg_from_json(json_file, split=None, label='label_id', label_offset=
                 # load label_id directly
                 label_id = int(event[label])
             labels += [label_id]
+            labels_verb += [mapping_a2vn[str(label_id)]['verb']]
+            labels_noun += [mapping_a2vn[str(label_id)]['noun']]
 
     # move to pd dataframe
     gt_base = pd.DataFrame({
         'video-id' : vids,
         't-start' : starts,
         't-end': stops,
-        'label': labels
+        'label': labels,
+        'label_verb':labels_verb,
+        'label_noun':labels_noun
     })
 
     return gt_base
@@ -141,6 +148,12 @@ class ANETdetection(object):
         # remove labels that does not exists in gt
         self.activity_index = {j: i for i, j in enumerate(sorted(self.ground_truth['label'].unique()))}
         self.ground_truth['label']=self.ground_truth['label'].replace(self.activity_index)
+        
+        self.activity_index_verb = {j: i for i, j in enumerate(sorted(self.ground_truth['label_verb'].unique()))}
+        self.ground_truth['label_verb']=self.ground_truth['label_verb'].replace(self.activity_index_verb)
+        
+        self.activity_index_noun = {j: i for i, j in enumerate(sorted(self.ground_truth['label_noun'].unique()))}
+        self.ground_truth['label_noun']=self.ground_truth['label_noun'].replace(self.activity_index_noun)
 
     def _get_predictions_with_label(self, prediction_by_label, label_name, cidx):
         """Get all predicitons of the given label. Return empty DataFrame if there
@@ -150,38 +163,38 @@ class ANETdetection(object):
             res = prediction_by_label.get_group(cidx).reset_index(drop=True)
             return res
         except:
-            print('Warning: No predictions of label \'%s\' were provdied.' % label_name)
+            # print('Warning: No predictions of label \'%s\' were provdied.' % label_name)
             return pd.DataFrame()
 
-    def wrapper_compute_average_precision(self, preds):
+    def wrapper_compute_average_precision(self, preds, label, activity_index):
         """Computes average precision for each class in the subset.
         """
-        ap = np.zeros((len(self.tiou_thresholds), len(self.activity_index)))
+        ap = np.zeros((len(self.tiou_thresholds), len(activity_index)))
 
         # Adaptation to query faster
-        ground_truth_by_label = self.ground_truth.groupby('label')
-        prediction_by_label = preds.groupby('label')
+        ground_truth_by_label = self.ground_truth.groupby(label)
+        prediction_by_label = preds.groupby(label)
 
         results = Parallel(n_jobs=self.num_workers)(
             delayed(compute_average_precision_detection)(
                 ground_truth=ground_truth_by_label.get_group(cidx).reset_index(drop=True),
                 prediction=self._get_predictions_with_label(prediction_by_label, label_name, cidx),
                 tiou_thresholds=self.tiou_thresholds,
-            ) for label_name, cidx in self.activity_index.items())
+            ) for label_name, cidx in activity_index.items())
 
-        for i, cidx in enumerate(self.activity_index.values()):
+        for i, cidx in enumerate(activity_index.values()):
             ap[:,cidx] = results[i]
 
         return ap
 
-    def wrapper_compute_topkx_recall(self, preds):
+    def wrapper_compute_topkx_recall(self, preds, label, activity_index):
         """Computes Top-kx recall for each class in the subset.
         """
-        recall = np.zeros((len(self.tiou_thresholds), len(self.top_k), len(self.activity_index)))
+        recall = np.zeros((len(self.tiou_thresholds), len(self.top_k), len(activity_index)))
 
         # Adaptation to query faster
-        ground_truth_by_label = self.ground_truth.groupby('label')
-        prediction_by_label = preds.groupby('label')
+        ground_truth_by_label = self.ground_truth.groupby(label)
+        prediction_by_label = preds.groupby(label)
 
         results = Parallel(n_jobs=self.num_workers)(
             delayed(compute_topkx_recall_detection)(
@@ -189,9 +202,9 @@ class ANETdetection(object):
                 prediction=self._get_predictions_with_label(prediction_by_label, label_name, cidx),
                 tiou_thresholds=self.tiou_thresholds,
                 top_k=self.top_k,
-            ) for label_name, cidx in self.activity_index.items())
+            ) for label_name, cidx in activity_index.items())
 
-        for i, cidx in enumerate(self.activity_index.values()):
+        for i, cidx in enumerate(activity_index.values()):
             recall[...,cidx] = results[i]
 
         return recall
@@ -211,25 +224,49 @@ class ANETdetection(object):
         elif isinstance(preds, Dict):
             # move to pd dataframe
             # did not check dtype here, can accept both numpy / pytorch tensors
+            with open('/data3/heyuping/epic100/epic_kitchens/annotations/mapping_a2vn.json', 'r') as f:
+                mapping_a2vn = json.load(f)
+            mapping_a2v = {int(k): u['verb'] for k,u in mapping_a2vn.items()}
+            mapping_a2n = {int(k): u['noun'] for k,u in mapping_a2vn.items()}
+            
+            preds['label_verb'] = np.array(list(map(mapping_a2v.get, preds['label'])))
+            preds['label_noun'] = np.array(list(map(mapping_a2n.get, preds['label'])))
+            
             preds = pd.DataFrame({
                 'video-id' : preds['video-id'],
                 't-start' : preds['t-start'].tolist(),
                 't-end': preds['t-end'].tolist(),
                 'label': preds['label'].tolist(),
+                'label_verb': preds['label_verb'].tolist(),
+                'label_noun': preds['label_noun'].tolist(),
                 'score': preds['score'].tolist()
             })
         # always reset ap
         self.ap = None
-
         # make the label ids consistent
         preds['label'] = preds['label'].replace(self.activity_index)
+        preds['label_verb'] = preds['label_verb'].replace(self.activity_index_verb)
+        preds['label_noun'] = preds['label_noun'].replace(self.activity_index_noun)
 
         # compute mAP
-        self.ap = self.wrapper_compute_average_precision(preds)
-        self.recall = self.wrapper_compute_topkx_recall(preds)
+        self.ap = self.wrapper_compute_average_precision(preds,'label',self.activity_index)
+        self.recall = self.wrapper_compute_topkx_recall(preds, 'label',self.activity_index)
         mAP = self.ap.mean(axis=1)
         mRecall = self.recall.mean(axis=2)
         average_mAP = mAP.mean()
+        
+        self.ap_verb = self.wrapper_compute_average_precision(preds,'label_verb',self.activity_index_verb)
+        self.recall_verb = self.wrapper_compute_topkx_recall(preds, 'label_verb',self.activity_index_verb)
+        mAP_verb = self.ap_verb.mean(axis=1)
+        mRecall_verb = self.recall_verb.mean(axis=2)
+        average_mAP_verb = mAP_verb.mean()
+        
+        self.ap_noun = self.wrapper_compute_average_precision(preds,'label_noun',self.activity_index_noun)
+        self.recall_noun = self.wrapper_compute_topkx_recall(preds, 'label_noun',self.activity_index_noun)
+        mAP_noun = self.ap_noun.mean(axis=1)
+        mRecall_noun = self.recall_noun.mean(axis=2)
+        average_mAP_noun = mAP_noun.mean()
+
 
         # print results
         if verbose:
@@ -238,13 +275,19 @@ class ANETdetection(object):
                 self.dataset_name)
             )
             block = ''
-            for tiou, tiou_mAP, tiou_mRecall in zip(self.tiou_thresholds, mAP, mRecall):
+            for tiou, tiou_mAP, tiou_mRecall, tiou_mAP_verb, tiou_mRecall_verb ,tiou_mAP_noun, tiou_mRecall_noun in zip(self.tiou_thresholds, mAP, mRecall, mAP_verb, mRecall_verb, mAP_noun, mRecall_noun):
                 block += '\n|tIoU = {:.2f}: '.format(tiou)
                 block += 'mAP = {:>4.2f} (%) '.format(tiou_mAP*100)
+                block += 'mAP_v= {:>4.2f} (%) '.format(tiou_mAP_verb*100)
+                block += 'mAP_n= {:>4.2f} (%) '.format(tiou_mAP_noun*100)
                 for idx, k in enumerate(self.top_k):
                     block += 'Recall@{:d}x = {:>4.2f} (%) '.format(k, tiou_mRecall[idx]*100)
+                    block += 'Recall_v@{:d}x = {:>4.2f} (%) '.format(k, tiou_mRecall_verb[idx]*100)
+                    block += 'Recall_n@{:d}x = {:>4.2f} (%) '.format(k, tiou_mRecall_noun[idx]*100)
             print(block)
             print('Average mAP: {:>4.2f} (%)'.format(average_mAP*100))
+            print('Average mAP_verb: {:>4.2f} (%)'.format(average_mAP_verb*100))
+            print('Average mAP_noun: {:>4.2f} (%)'.format(average_mAP_noun*100))
 
         # return the results
         return mAP, average_mAP, mRecall
@@ -321,8 +364,8 @@ def compute_average_precision_detection(
             if fp[tidx, idx] == 0 and tp[tidx, idx] == 0:
                 fp[tidx, idx] = 1
 
-    tp_cumsum = np.cumsum(tp, axis=1).astype(np.float)
-    fp_cumsum = np.cumsum(fp, axis=1).astype(np.float)
+    tp_cumsum = np.cumsum(tp, axis=1).astype(float)
+    fp_cumsum = np.cumsum(fp, axis=1).astype(float)
     recall_cumsum = tp_cumsum / npos
 
     precision_cumsum = tp_cumsum / (tp_cumsum + fp_cumsum)

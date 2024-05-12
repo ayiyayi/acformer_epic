@@ -437,3 +437,57 @@ def valid_one_epoch(
         tb_writer.add_scalar('validation/mAP', mAP, curr_epoch)
 
     return mAP
+
+import json
+def test_one_epoch(
+    test_loader,
+    model
+):
+    """Test the model on the test set"""
+
+    # set up meters
+    batch_time = AverageMeter()
+    # switch to evaluate mode
+    model.eval()
+
+        
+    # loop over validation set
+    detection_dict = {}  
+    with open('/data3/heyuping/epic100/epic_kitchens/annotations/mapping_a2vn.json', 'r') as f:
+        mapping_a2vn = json.load(f)
+            
+    all_data = {"version": "0.2",
+                "challenge": "action_detection",
+                "sls_pt": 0,
+                "sls_tl": 3,
+                "sls_td": 3}
+            
+    for _, video_list in enumerate(test_loader, 0):
+        # forward the model (wo. grad)
+        with torch.no_grad():
+            output = model(video_list)  #detection result
+            for item in output:
+                clip_item = []
+                cid = item['video_id']
+                item['segments'] = item["segments"].detach().cpu().numpy()
+                item['labels'] = item["labels"].detach().cpu().numpy()
+                item['scores'] = item["scores"].detach().cpu().numpy()
+                
+                for idx in range(len(item['labels'])):
+                    tmp_proposal = {}
+                    tmp_proposal["verb"] = mapping_a2vn[str(item['labels'][idx])]['verb']
+                    tmp_proposal["noun"] = mapping_a2vn[str(item['labels'][idx])]['noun']
+                    tmp_proposal["action"] = str(tmp_proposal["verb"]) +',' + str(tmp_proposal["noun"])
+                    tmp_proposal["score"] = float(item["scores"][idx])
+                    tmp_proposal["segment"] = [float(max(0, item["segments"][idx][0])),
+                                           float(item["segments"][idx][1])]
+                    clip_item.append(tmp_proposal)
+                detection_dict[cid] = clip_item
+
+    # output_dict = {"results": detection_dict, "external_data": {}}
+    all_data['results'] = detection_dict
+    with open('/home/heyuping/acformer_epic/action_results.json', "w") as out:
+        json.dump(all_data, out)
+   
+
+    return 0
